@@ -125,7 +125,6 @@ edited_df = st.data_editor(
     st.session_state.get("df_edit", pd.DataFrame()),
     num_rows="dynamic",
     use_container_width=True,
-    column_config={"id": st.column_config.Column(hidden=True)}  # 若需隱藏id可保留此行
 )
 st.session_state.df_edit = edited_df
 
