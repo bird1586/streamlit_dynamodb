@@ -133,7 +133,10 @@ if st.button("新增空白列"):
     st.session_state.df_edit = df_edit
 
 # 編輯 DataFrame
-edited_df = st.data_editor(st.session_state.get("df_edit", pd.DataFrame()), num_rows="dynamic", use_container_width=True)
+column_config = {
+    "id": st.column_config.Column(hidden=True)
+}
+edited_df = st.data_editor(st.session_state.get("df_edit", pd.DataFrame()), num_rows="dynamic", use_container_width=True, column_config=column_config)
 st.session_state.df_edit = edited_df
 
 # 提交變更按鈕
