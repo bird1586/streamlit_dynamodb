@@ -4,7 +4,7 @@ import pandas as pd
 import uuid
 from copy import deepcopy
 
-# --------- 密碼保護 -----------
+# 密碼保護程式碼不變
 def check_password():
     if "password_correct" not in st.session_state:
         pw = st.text_input("請輸入密碼", type="password")
@@ -21,9 +21,8 @@ def check_password():
 if not check_password():
     st.stop()
 
-st.title("DynamoDB 資料表 CRUD (st.data_editor)")
+st.title("DynamoDB 資料表 CRUD")
 
-# --------- 初始化 DynamoDB 資源 -----------
 dynamodb = boto3.resource(
     'dynamodb',
     region_name=st.secrets["aws_region"],
@@ -34,7 +33,6 @@ dynamodb = boto3.resource(
 table_name = st.secrets["dynamodb_table_name"]
 table = dynamodb.Table(table_name)
 
-# --------- 讀取資料的函式 ----------
 @st.cache_data(ttl=60, show_spinner=False)
 def load_data():
     items = []
@@ -54,8 +52,6 @@ def load_data():
     df['id'] = df['id'].astype(str)
     return df
 
-# --------- CRUD 函式略，與之前相同 --------
-
 def put_item(item):
     try:
         table.put_item(Item=item)
@@ -70,7 +66,7 @@ def update_item(item):
         expr_attr_vals = {}
         expr_attr_names = {}
         updates = []
-        for k,v in item.items():
+        for k, v in item.items():
             if k == 'id':
                 continue
             updates.append(f"#{k} = :{k}")
@@ -95,19 +91,17 @@ def delete_item(item_id):
         return False, str(e)
 
 
-# --------- 主流程 ---------
-# 新增一個 refresh 按鈕控制變數
+# 主流程
+
 if "refresh_data" not in st.session_state:
     st.session_state.refresh_data = True
 
 col1, col2 = st.columns([1, 3])
 with col1:
     if st.button("刷新表格內容"):
-        # 點擊按鈕時清除快取並標記要重新載入
         st.cache_data.clear()
         st.session_state.refresh_data = True
 
-# 負責根據 flag 判斷是否要讀資料，避免無謂讀取
 if st.session_state.refresh_data:
     df_original = load_data()
     st.session_state.df_original = df_original
@@ -121,26 +115,20 @@ if df_original.empty:
     st.info("目前資料表空白。")
 
 st.write("編輯表格後，請點擊『提交變更』套用資料庫更新")
-st.text("可直接編輯資料格。要新增請點『新增空白列』。刪除資料請清除該列全部欄位值並提交。")
+st.text("可直接編輯資料格。刪除資料請清除該列全部欄位值並提交。")
 
-# 按鈕建立空白列
-if st.button("新增空白列"):
-    df_edit = st.session_state.get("df_edit", pd.DataFrame())
-    new_row = {col: "" for col in df_edit.columns} if not df_edit.empty else {}
-    if 'id' not in new_row:
-        new_row['id'] = ""
-    df_edit = pd.concat([df_edit, pd.DataFrame([new_row])], ignore_index=True)
-    st.session_state.df_edit = df_edit.iloc[:,1:]
+# ======= 移除新增空白列按鈕（原本這段移除） =======
+# if st.button("新增空白列"):
+#     ...
 
-# 編輯 DataFrame
 edited_df = st.data_editor(
     st.session_state.get("df_edit", pd.DataFrame()),
     num_rows="dynamic",
     use_container_width=True,
+    column_config={"id": st.column_config.Column(hidden=True)}  # 若需隱藏id可保留此行
 )
 st.session_state.df_edit = edited_df
 
-# 提交變更按鈕
 if st.button("提交變更"):
     def diff_dfs(old_df, new_df):
         old_ids = set(old_df['id'].astype(str))
@@ -152,6 +140,7 @@ if st.button("提交變更"):
 
         added_rows = new_df[new_df['id'].isin(added_ids)]
         deleted_rows = old_df[old_df['id'].isin(deleted_ids)]
+
         modified_rows = []
         for idx, row in new_df[new_df['id'].isin(possible_modified_ids)].iterrows():
             oid = row['id']
@@ -159,24 +148,41 @@ if st.button("提交變更"):
             if row.astype(str).equals(old_row.astype(str)) is False:
                 modified_rows.append(row)
         modified_rows_df = pd.DataFrame(modified_rows)
+
         return added_rows, deleted_rows, modified_rows_df
 
-    valid_edited_df = edited_df[edited_df['id'].apply(lambda x: isinstance(x,str) and x.strip() != "")]
+    valid_edited_df = edited_df.copy()
+
+    # 自動帶入ID：補齊id缺失或空白行
+    def fill_missing_ids(df):
+        def gen_id(val):
+            if not isinstance(val, str) or val.strip() == "":
+                return str(uuid.uuid4())
+            else:
+                return val
+        df['id'] = df['id'].apply(gen_id)
+        return df
+
+    valid_edited_df = fill_missing_ids(valid_edited_df)
+
     added_rows, deleted_rows, modified_rows = diff_dfs(df_original, valid_edited_df)
 
     with st.spinner("同步變更至 DynamoDB..."):
         errors = []
+        # 刪除
         for _, row in deleted_rows.iterrows():
             ok, err = delete_item(row['id'])
             if not ok:
                 errors.append(f"刪除ID={row['id']}錯誤: {err}")
+
+        # 新增（id 已確保無空白）
         for _, row in added_rows.iterrows():
             item = row.to_dict()
-            if not item.get('id') or str(item['id']).strip() == "":
-                item['id'] = str(uuid.uuid4())
             ok, err = put_item(item)
             if not ok:
                 errors.append(f"新增ID={item['id']}錯誤: {err}")
+
+        # 修改
         for _, row in modified_rows.iterrows():
             item = row.to_dict()
             ok, err = update_item(item)
@@ -187,7 +193,6 @@ if st.button("提交變更"):
         st.error("部分操作失敗:\n" + "\n".join(errors))
     else:
         st.success("資料庫同步成功！")
-        # 成功後更新快取資料及編輯內容
         st.cache_data.clear()
         st.session_state.refresh_data = True
         st.experimental_rerun()
