@@ -21,7 +21,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-st.title("DynamoDB 資料表 CRUD (st.data_editor)")
+st.title("DynamoDB 資料表 CRUD")
 
 # ----- DynamoDB 初始化 -----
 dynamodb = boto3.resource(
