@@ -160,6 +160,7 @@ edited_df = st.data_editor(
     df_display,
     num_rows="dynamic",
     use_container_width=True,
+    column_order=['序號', "name", "value"]
 )
 
 # 儲存編輯中 dataframe（不含序號欄）
