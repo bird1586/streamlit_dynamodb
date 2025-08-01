@@ -156,14 +156,8 @@ st.text("可直接修改資料。新增可在最下方空白列操作。刪除�
 
 df_display = add_index_col(st.session_state.df_edit)
 
-column_config = {
-    "序號": st.column_config.Column(read_only=True),
-    "id": st.column_config.Column(header="UUID (ID)", read_only=True)
-}
-
 edited_df = st.data_editor(
     df_display,
-    column_config=column_config,
     num_rows="dynamic",
     use_container_width=True,
 )
