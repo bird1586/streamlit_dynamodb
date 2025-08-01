@@ -183,7 +183,7 @@ if len(st.session_state.df_edit) > 0:
             st.session_state.df_edit = st.session_state.df_edit.drop(st.session_state.df_edit.index[del_idx]).reset_index(drop=True)
             st.success(f"序號 {delete_index} 資料列已從編輯清單刪除，提交後同步刪除至資料庫。")
             # 重新觸發介面更新
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("輸入序號不在範圍內，請重新輸入。")
 
