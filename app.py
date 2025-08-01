@@ -152,7 +152,7 @@ if df_original.empty:
     st.info("目前資料表空白。")
 
 st.write("編輯表格後，請點擊『提交變更』同步資料。")
-st.text("可直接修改資料。新增可在最下方空白列操作。刪除資料請清空該行所有欄位。")
+st.text("可直接修改資料。新增可在最下方空白列操作。刪除資料請清空該行所有欄位，或使用下方的序號刪除功能。")
 
 df_display = add_index_col(st.session_state.df_edit)
 
@@ -166,7 +166,28 @@ edited_df = st.data_editor(
 # 儲存編輯中 dataframe（不含序號欄）
 st.session_state.df_edit = edited_df.drop(columns=['序號'], errors='ignore')
 
-if st.button("提交變更"):
+# ----- 根據序號刪除列功能 -----
+if len(st.session_state.df_edit) > 0:
+    st.write("---")
+    st.subheader("輸入序號刪除資料列")
+    delete_index = st.number_input(
+        "請輸入欲刪除的序號",
+        min_value=1,
+        max_value=len(st.session_state.df_edit),
+        step=1,
+        key="delete_index_input"
+    )
+    if st.button("刪除該序號資料列", key="delete_row_btn"):
+        del_idx = delete_index - 1
+        if 0 <= del_idx < len(st.session_state.df_edit):
+            st.session_state.df_edit = st.session_state.df_edit.drop(st.session_state.df_edit.index[del_idx]).reset_index(drop=True)
+            st.success(f"序號 {delete_index} 資料列已從編輯清單刪除，提交後同步刪除至資料庫。")
+            # 重新觸發介面更新
+            st.experimental_rerun()
+        else:
+            st.error("輸入序號不在範圍內，請重新輸入。")
+
+if st.button("提交變更", key="submit_changes_btn"):
     df_to_process = st.session_state.df_edit.copy()
     df_to_process = fill_missing_ids(df_to_process)  # 填補新列缺少id
 
