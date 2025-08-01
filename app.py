@@ -1,10 +1,10 @@
 import streamlit as st
 import boto3
-from boto3.dynamodb.conditions import Key
 import pandas as pd
 import uuid
+from copy import deepcopy
 
-# ---- 密碼檢查 ----
+# --------- 密碼保護 -----------
 def check_password():
     if "password_correct" not in st.session_state:
         pw = st.text_input("請輸入密碼", type="password")
@@ -21,98 +21,169 @@ def check_password():
 if not check_password():
     st.stop()
 
-st.title("DynamoDB CRUD with Streamlit")
+st.title("DynamoDB 資料表 CRUD (st.data_editor)")
 
-# ---- 初始化 DynamoDB 客戶端 ----
+# --------- 初始化 DynamoDB 資源 -----------
 dynamodb = boto3.resource(
     'dynamodb',
     region_name=st.secrets["aws_region"],
     aws_access_key_id=st.secrets["aws_access_key_id"],
     aws_secret_access_key=st.secrets["aws_secret_access_key"]
 )
-table = dynamodb.Table(st.secrets["dynamodb_table_name"])
 
-# ---- 讀取現有資料 ----
+table_name = st.secrets["dynamodb_table_name"]
+table = dynamodb.Table(table_name)
+
+# --------- 讀取資料的函式 ----------
+@st.cache_data(ttl=60, show_spinner=False)
 def load_data():
-    response = table.scan()
-    items = response.get('Items', [])
+    items = []
+    last_evaluated_key = None
+    while True:
+        if last_evaluated_key:
+            resp = table.scan(ExclusiveStartKey=last_evaluated_key)
+        else:
+            resp = table.scan()
+        items.extend(resp.get('Items', []))
+        last_evaluated_key = resp.get('LastEvaluatedKey')
+        if not last_evaluated_key:
+            break
     if not items:
         return pd.DataFrame()
     df = pd.DataFrame(items)
+    df['id'] = df['id'].astype(str)
     return df
 
-# 載入資料
-df = load_data()
+# --------- CRUD 函式略，與之前相同 --------
 
-# 顯示資料
-st.subheader("目前資料")
-if df.empty:
-    st.info("DynamoDB 無資料")
+def put_item(item):
+    try:
+        table.put_item(Item=item)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def update_item(item):
+    try:
+        key = {'id': item['id']}
+        update_expr = "SET "
+        expr_attr_vals = {}
+        expr_attr_names = {}
+        updates = []
+        for k,v in item.items():
+            if k == 'id':
+                continue
+            updates.append(f"#{k} = :{k}")
+            expr_attr_names[f"#{k}"] = k
+            expr_attr_vals[f":{k}"] = v
+        update_expr += ", ".join(updates)
+        table.update_item(
+            Key=key,
+            UpdateExpression=update_expr,
+            ExpressionAttributeNames=expr_attr_names,
+            ExpressionAttributeValues=expr_attr_vals
+        )
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def delete_item(item_id):
+    try:
+        table.delete_item(Key={'id': item_id})
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+# --------- 主流程 ---------
+# 新增一個 refresh 按鈕控制變數
+if "refresh_data" not in st.session_state:
+    st.session_state.refresh_data = True
+
+col1, col2 = st.columns([1, 3])
+with col1:
+    if st.button("刷新表格內容"):
+        # 點擊按鈕時清除快取並標記要重新載入
+        st.cache_data.clear()
+        st.session_state.refresh_data = True
+
+# 負責根據 flag 判斷是否要讀資料，避免無謂讀取
+if st.session_state.refresh_data:
+    df_original = load_data()
+    st.session_state.df_original = df_original
+    st.session_state.df_edit = deepcopy(df_original)
+    st.session_state.refresh_data = False
 else:
-    st.dataframe(df)
+    df_original = st.session_state.get("df_original", pd.DataFrame())
+    df_edit = st.session_state.get("df_edit", pd.DataFrame())
 
-# ---- 新增資料 ----
-st.subheader("新增資料")
-new_name = st.text_input("名稱")
-new_value = st.text_input("數值")
+if df_original.empty:
+    st.info("目前資料表空白。")
 
-if st.button("新增"):
-    if not new_name or not new_value:
-        st.error("名稱與數值不可為空")
+st.write("編輯表格後，請點擊『提交變更』套用資料庫更新")
+st.text("可直接編輯資料格。要新增請點『新增空白列』。刪除資料請清除該列全部欄位值並提交。")
+
+# 按鈕建立空白列
+if st.button("新增空白列"):
+    df_edit = st.session_state.get("df_edit", pd.DataFrame())
+    new_row = {col: "" for col in df_edit.columns} if not df_edit.empty else {}
+    if 'id' not in new_row:
+        new_row['id'] = ""
+    df_edit = pd.concat([df_edit, pd.DataFrame([new_row])], ignore_index=True)
+    st.session_state.df_edit = df_edit
+
+# 編輯 DataFrame
+edited_df = st.data_editor(st.session_state.get("df_edit", pd.DataFrame()), num_rows="dynamic", use_container_width=True)
+st.session_state.df_edit = edited_df
+
+# 提交變更按鈕
+if st.button("提交變更"):
+    def diff_dfs(old_df, new_df):
+        old_ids = set(old_df['id'].astype(str))
+        new_ids = set(new_df['id'].astype(str))
+
+        added_ids = new_ids - old_ids
+        deleted_ids = old_ids - new_ids
+        possible_modified_ids = new_ids.intersection(old_ids)
+
+        added_rows = new_df[new_df['id'].isin(added_ids)]
+        deleted_rows = old_df[old_df['id'].isin(deleted_ids)]
+        modified_rows = []
+        for idx, row in new_df[new_df['id'].isin(possible_modified_ids)].iterrows():
+            oid = row['id']
+            old_row = old_df[old_df['id'] == oid].iloc[0]
+            if row.astype(str).equals(old_row.astype(str)) is False:
+                modified_rows.append(row)
+        modified_rows_df = pd.DataFrame(modified_rows)
+        return added_rows, deleted_rows, modified_rows_df
+
+    valid_edited_df = edited_df[edited_df['id'].apply(lambda x: isinstance(x,str) and x.strip() != "")]
+    added_rows, deleted_rows, modified_rows = diff_dfs(df_original, valid_edited_df)
+
+    with st.spinner("同步變更至 DynamoDB..."):
+        errors = []
+        for _, row in deleted_rows.iterrows():
+            ok, err = delete_item(row['id'])
+            if not ok:
+                errors.append(f"刪除ID={row['id']}錯誤: {err}")
+        for _, row in added_rows.iterrows():
+            item = row.to_dict()
+            if not item.get('id') or str(item['id']).strip() == "":
+                item['id'] = str(uuid.uuid4())
+            ok, err = put_item(item)
+            if not ok:
+                errors.append(f"新增ID={item['id']}錯誤: {err}")
+        for _, row in modified_rows.iterrows():
+            item = row.to_dict()
+            ok, err = update_item(item)
+            if not ok:
+                errors.append(f"更新ID={item['id']}錯誤: {err}")
+
+    if errors:
+        st.error("部分操作失敗:\n" + "\n".join(errors))
     else:
-        new_id = str(uuid.uuid4())
-        item = {
-            'id': new_id,
-            'name': new_name,
-            'value': new_value
-        }
-        try:
-            table.put_item(Item=item)
-            st.success(f"新增成功，ID={new_id}")
-            st.experimental_rerun()
-        except Exception as e:
-            st.error(f"新增失敗: {e}")
-
-# ---- 修改或刪除資料 ----
-st.subheader("修改 / 刪除資料")
-if df.empty:
-    st.info("無法修改或刪除，資料表為空")
-else:
-    selected_id = st.selectbox("選擇要修改或刪除的ID", df['id'])
-
-    selected_record = df[df['id'] == selected_id].iloc[0]
-
-    new_name_edit = st.text_input("名稱", value=selected_record.get('name', ''))
-    new_value_edit = st.text_input("數值", value=selected_record.get('value', ''))
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("更新資料"):
-            try:
-                table.update_item(
-                    Key={'id': selected_id},
-                    UpdateExpression="SET #n = :name, #v = :val",
-                    ExpressionAttributeNames={
-                        '#n': 'name',
-                        '#v': 'value',
-                    },
-                    ExpressionAttributeValues={
-                        ':name': new_name_edit,
-                        ':val': new_value_edit,
-                    }
-                )
-                st.success("更新成功")
-                st.experimental_rerun()
-            except Exception as e:
-                st.error(f"更新失敗: {e}")
-
-    with col2:
-        if st.button("刪除資料"):
-            try:
-                table.delete_item(Key={'id': selected_id})
-                st.success("刪除成功")
-                st.experimental_rerun()
-            except Exception as e:
-                st.error(f"刪除失敗: {e}")
-
+        st.success("資料庫同步成功！")
+        # 成功後更新快取資料及編輯內容
+        st.cache_data.clear()
+        st.session_state.refresh_data = True
+        st.experimental_rerun()
