@@ -198,4 +198,4 @@ if st.button("提交變更"):
         st.success("資料庫同步成功！")
         st.cache_data.clear()
         st.session_state.refresh_data = True
-        st.experimental_rerun()
+        st.rerun()
